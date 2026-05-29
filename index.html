@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VPS/Broker Latency Checker</title>
-  <!-- Tailwind CSS -->
+  <title>Latency Checker – VPS/Broker</title>
+  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -12,11 +12,11 @@
   <!-- React 18 -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <!-- PropTypes (dibutuhkan Recharts) -->
+  <!-- PropTypes untuk Recharts -->
   <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
-  <!-- Recharts (pastikan global Recharts tersedia) -->
+  <!-- Recharts UMD -->
   <script src="https://unpkg.com/recharts@2.10.3/umd/Recharts.js"></script>
-  <!-- Babel standalone untuk JSX -->
+  <!-- Babel standalone -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     body { background: #0f172a; color: #f8fafc; font-family: system-ui; margin: 0; }
@@ -32,7 +32,6 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    // Tunggu semua script selesai
     const { useState, useEffect, useRef, useCallback } = React;
     const {
       LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
@@ -50,7 +49,6 @@
       iconAnchor: [12, 41],
     });
 
-    // Data broker default
     const DEFAULT_BROKERS = [
       { brokerName: 'IC Markets', serverName: 'ICMarkets-Demo', location: 'London, UK', ip: '51.75.145.200' },
       { brokerName: 'Exness', serverName: 'Exness-Real', location: 'Singapore', ip: '185.186.79.24' },
@@ -88,28 +86,49 @@
         return () => map.remove();
       }, []);
 
-      // Geo lookup
+      // Geo lookup menggunakan ipwho.is (fallback ke ipapi.co)
       const lookupGeo = async (ip) => {
         if (!ip) return;
         setLoadingGeo(true);
         setError('');
         try {
-          const res = await fetch(`https://ipapi.co/${ip}/json/`);
-          const data = await res.json();
-          if (data.error) throw new Error(data.reason || 'Invalid IP');
+          let data;
+          // Coba ipwho.is dulu (CORS-friendly)
+          const res1 = await fetch(`https://ipwho.is/${ip}`);
+          data = await res1.json();
+          if (!data.success) throw new Error(data.message || 'Invalid IP');
+
           const geo = {
             ip,
-            country: data.country_name,
+            country: data.country,
             city: data.city,
             region: data.region,
             ll: [data.latitude, data.longitude],
-            timezone: data.timezone,
-            org: data.org,
+            timezone: data.timezone?.id || 'N/A',
+            org: data.connection?.isp || 'N/A',
           };
           setGeoInfo(geo);
           updateMap(geo.ll);
         } catch (err) {
-          setError('Geo lookup failed: ' + err.message);
+          // Fallback ke ipapi.co
+          try {
+            const res2 = await fetch(`https://ipapi.co/${ip}/json/`);
+            const data2 = await res2.json();
+            if (data2.error) throw new Error(data2.reason);
+            const geo2 = {
+              ip,
+              country: data2.country_name,
+              city: data2.city,
+              region: data2.region,
+              ll: [data2.latitude, data2.longitude],
+              timezone: data2.timezone,
+              org: data2.org,
+            };
+            setGeoInfo(geo2);
+            updateMap(geo2.ll);
+          } catch (fallbackErr) {
+            setError('Geo lookup failed. Please check the IP address.');
+          }
         }
         setLoadingGeo(false);
       };
@@ -143,7 +162,7 @@
         try {
           await fetch(`http://${ip}`, { mode: 'no-cors', signal: controller.signal });
         } catch (e) {
-          // abort atau network error
+          // Aborted atau network error tetap lanjut
         }
         clearTimeout(timeout);
         return performance.now() - start;
@@ -324,7 +343,8 @@
             </div>
           </div>
           <p className="text-center text-gray-500 text-xs mt-6">
-            * Latency diukur dari browser Anda ke IP broker (fetch no-cors).
+            * Latency diukur dari browser Anda ke IP broker (fetch no-cors).<br />
+            Untuk mengukur dari VPS, gunakan backend Node.js (seperti yang sudah disediakan sebelumnya).
           </p>
         </div>
       );
