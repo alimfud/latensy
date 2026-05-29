@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Latency Checker – VPS/Broker</title>
+  <title>VPS ↔ Broker Latency Checker</title>
   <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Leaflet -->
@@ -49,22 +49,23 @@
       iconAnchor: [12, 41],
     });
 
+    // Data broker bawaan – gunakan nama server spesifik
     const DEFAULT_BROKERS = [
-      { brokerName: 'IC Markets', serverName: 'ICMarkets-Demo', location: 'London, UK', ip: '51.75.145.200' },
-      { brokerName: 'Exness', serverName: 'Exness-Real', location: 'Singapore', ip: '185.186.79.24' },
-      { brokerName: 'Pepperstone', serverName: 'Pepperstone-Edge', location: 'New York, US', ip: '104.18.20.100' },
-      { brokerName: 'XM', serverName: 'XM-Demo', location: 'Cyprus', ip: '82.102.16.2' },
-      { brokerName: 'FXTM', serverName: 'FXTM-ECN', location: 'London, UK', ip: '74.125.200.94' },
-      { brokerName: 'Tickmill', serverName: 'Tickmill-Demo', location: 'Frankfurt, DE', ip: '78.46.79.183' },
-      { brokerName: 'FBS', serverName: 'FBS-Real', location: 'Amsterdam, NL', ip: '89.105.193.5' },
-      { brokerName: 'OctaFX', serverName: 'OctaFX-Real', location: 'Singapore', ip: '168.138.208.21' },
+      { serverName: 'ICMarkets-Demo', ip: '51.75.145.200', location: 'London, UK' },
+      { serverName: 'Exness-Real30', ip: '185.186.79.24', location: 'Singapore' },
+      { serverName: 'Pepperstone-Edge', ip: '104.18.20.100', location: 'New York, US' },
+      { serverName: 'XM-Demo', ip: '82.102.16.2', location: 'Cyprus' },
+      { serverName: 'FXTM-ECN', ip: '74.125.200.94', location: 'London, UK' },
+      { serverName: 'Tickmill-Demo', ip: '78.46.79.183', location: 'Frankfurt, DE' },
+      { serverName: 'FBS-Real', ip: '89.105.193.5', location: 'Amsterdam, NL' },
+      { serverName: 'OctaFX-Real', ip: '168.138.208.21', location: 'Singapore' },
     ];
 
     function App() {
       const [vpsIP, setVpsIP] = useState('');
       const [vpsGeo, setVpsGeo] = useState(null);
       const [loadingVpsGeo, setLoadingVpsGeo] = useState(false);
-      const [brokers] = useState(DEFAULT_BROKERS);
+      const [brokers, setBrokers] = useState(DEFAULT_BROKERS);
       const [search, setSearch] = useState('');
       const [selectedBroker, setSelectedBroker] = useState(null);
       const [brokerGeo, setBrokerGeo] = useState(null);
@@ -72,6 +73,7 @@
       const [results, setResults] = useState([]);
       const [stats, setStats] = useState({ avg: '-', min: '-', max: '-', loss: '-', jitter: '-' });
       const [error, setError] = useState('');
+      const [usingMQL5, setUsingMQL5] = useState(false);
 
       const mapInstance = useRef(null);
       const vpsMarkerRef = useRef(null);
@@ -89,14 +91,36 @@
         return () => map.remove();
       }, []);
 
-      // Fungsi lookup geo untuk IP tertentu (VPS atau Broker)
-      const lookupGeo = async (ip, type) => {
+      // Coba muat data dari brokers.json (MQL5 scraped) jika tersedia
+      useEffect(() => {
+        fetch('/brokers.json')
+          .then(res => {
+            if (res.ok) return res.json();
+            throw new Error('not found');
+          })
+          .then(data => {
+            if (Array.isArray(data) && data.length > 0) {
+              setBrokers(data);
+              setUsingMQL5(true);
+            }
+          })
+          .catch(() => {
+            console.log('Menggunakan daftar broker bawaan');
+            setUsingMQL5(false);
+          });
+      }, []);
+
+      // Fungsi lookup geo yang lebih stabil
+      const lookupGeo = async (ip) => {
         if (!ip) return null;
+        // Validasi IP sederhana
+        const ipv4Regex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+        if (!ipv4Regex.test(ip)) throw new Error('Invalid IPv4 address');
+
         try {
-          // Coba ipapi.co
           const res = await fetch(`https://ipapi.co/${ip}/json/`);
           const data = await res.json();
-          if (data.error) throw new Error(data.reason);
+          if (data.error) throw new Error(data.reason || 'ipapi.co error');
           return {
             ip,
             country: data.country_name,
@@ -107,22 +131,23 @@
             org: data.org,
           };
         } catch (firstErr) {
+          // Fallback ke ipinfo.io (tanpa token, rate limited)
           try {
-            // Fallback ke bigdatacloud
-            const res2 = await fetch(`https://api.bigdatacloud.net/data/ip-geolocation?ip=${ip}`);
+            const res2 = await fetch(`https://ipinfo.io/${ip}/json`);
             const data2 = await res2.json();
-            if (!data2.location) throw new Error('No location');
+            if (!data2.loc) throw new Error('No location');
+            const [lat, lon] = data2.loc.split(',');
             return {
               ip,
-              country: data2.country?.name || 'Unknown',
-              city: data2.location?.city || 'Unknown',
-              region: data2.location?.principalSubdivision || '',
-              ll: [data2.location?.latitude || 0, data2.location?.longitude || 0],
-              timezone: data2.location?.timeZone?.id || 'N/A',
-              org: data2.network?.carrier?.name || 'N/A',
+              country: data2.country || 'Unknown',
+              city: data2.city || 'Unknown',
+              region: data2.region || '',
+              ll: [parseFloat(lat), parseFloat(lon)],
+              timezone: data2.timezone || 'N/A',
+              org: data2.org || 'N/A',
             };
           } catch (secondErr) {
-            throw new Error('All geo services failed');
+            throw new Error('All geo services failed. IP may be invalid.');
           }
         }
       };
@@ -137,7 +162,7 @@
           setVpsGeo(geo);
           updateMapMarkers(geo, brokerGeo);
         } catch (err) {
-          setError('Failed to locate VPS IP. Please try again.');
+          setError(err.message || 'Failed to locate VPS IP.');
           setVpsGeo(null);
         }
         setLoadingVpsGeo(false);
@@ -149,21 +174,19 @@
         setResults([]);
         setStats({ avg: '-', min: '-', max: '-', loss: '-', jitter: '-' });
         setError('');
-        // Lookup geo broker
         try {
           const geo = await lookupGeo(broker.ip);
           setBrokerGeo(geo);
           updateMapMarkers(vpsGeo, geo);
         } catch (err) {
-          setError('Could not locate broker, but you can still test latency.');
+          setError('Could not locate broker IP, but you can still test latency.');
           setBrokerGeo(null);
         }
       };
 
-      // Update peta: dua marker + polyline jika keduanya ada
+      // Update peta
       const updateMapMarkers = (vps, broker) => {
         if (!mapInstance.current) return;
-        // Hapus layer lama
         if (vpsMarkerRef.current) mapInstance.current.removeLayer(vpsMarkerRef.current);
         if (brokerMarkerRef.current) mapInstance.current.removeLayer(brokerMarkerRef.current);
         if (polylineRef.current) mapInstance.current.removeLayer(polylineRef.current);
@@ -176,7 +199,7 @@
         if (broker?.ll) {
           brokerMarkerRef.current = L.marker(broker.ll, { icon: brokerIcon })
             .addTo(mapInstance.current)
-            .bindPopup(`<b>${selectedBroker?.brokerName}</b><br>${broker.ip}<br>${broker.city}, ${broker.country}`);
+            .bindPopup(`<b>${selectedBroker?.serverName}</b><br>${broker.ip}<br>${broker.city}, ${broker.country}`);
         }
         if (vps?.ll && broker?.ll) {
           polylineRef.current = L.polyline([vps.ll, broker.ll], { color: '#06b6d4', weight: 2, dashArray: '5, 10' })
@@ -189,7 +212,7 @@
         }
       };
 
-      // Pengukuran latency dari browser ke broker IP
+      // Pengukuran latency
       const measureLatency = useCallback(async () => {
         const ip = selectedBroker?.ip;
         if (!ip) return null;
@@ -198,9 +221,7 @@
         const start = performance.now();
         try {
           await fetch(`http://${ip}`, { mode: 'no-cors', signal: controller.signal });
-        } catch (e) {
-          // Aborted atau network error tetap lanjut
-        }
+        } catch (e) {}
         clearTimeout(timeout);
         return performance.now() - start;
       }, [selectedBroker]);
@@ -246,10 +267,7 @@
       }, [selectedBroker, testRunning, measureLatency]);
 
       const stopTest = () => {
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
+        if (intervalRef.current) clearInterval(intervalRef.current);
         setTestRunning(false);
       };
 
@@ -258,9 +276,8 @@
       }, []);
 
       const filteredBrokers = brokers.filter(b =>
-        b.brokerName.toLowerCase().includes(search.toLowerCase()) ||
         b.serverName.toLowerCase().includes(search.toLowerCase()) ||
-        b.location.toLowerCase().includes(search.toLowerCase())
+        (b.location && b.location.toLowerCase().includes(search.toLowerCase()))
       );
 
       const statusColor = (val) => {
@@ -279,7 +296,6 @@
           </h1>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Kolom Kiri: Input VPS & Daftar Broker */}
             <div className="space-y-6">
               <div className="card">
                 <h2 className="text-lg font-semibold mb-3">Your VPS IP</h2>
@@ -299,6 +315,7 @@
                     {loadingVpsGeo ? '...' : 'Lookup'}
                   </button>
                 </div>
+                {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
                 {vpsGeo && (
                   <div className="mt-3 text-sm space-y-1">
                     <p><span className="text-gray-400">Location:</span> {vpsGeo.city}, {vpsGeo.country}</p>
@@ -310,12 +327,15 @@
               </div>
 
               <div className="card">
-                <h2 className="text-lg font-semibold mb-3">Broker Servers</h2>
+                <div className="flex justify-between items-center mb-3">
+                  <h2 className="text-lg font-semibold">Broker Servers</h2>
+                  {usingMQL5 && <span className="text-xs bg-cyan-900 text-cyan-300 px-2 py-1 rounded">MQL5 data</span>}
+                </div>
                 <input
                   type="text"
                   value={search}
                   onChange={e => setSearch(e.target.value)}
-                  placeholder="Search broker..."
+                  placeholder="Search by server name or location"
                   className="w-full bg-gray-800 rounded-lg px-3 py-2 mb-3 outline-none border border-gray-700 focus:border-cyan-500 text-sm"
                 />
                 <div className="max-h-80 overflow-y-auto scrollbar-thin space-y-2">
@@ -324,27 +344,24 @@
                       key={idx}
                       onClick={() => selectBroker(broker)}
                       className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                        selectedBroker?.ip === broker.ip
+                        selectedBroker?.serverName === broker.serverName
                           ? 'bg-cyan-900 border border-cyan-500'
                           : 'bg-gray-800 hover:bg-gray-700'
                       }`}
                     >
-                      <p className="font-medium text-sm">{broker.brokerName}</p>
-                      <p className="text-xs text-gray-400">{broker.serverName} • {broker.location}</p>
+                      <p className="font-medium text-sm">{broker.serverName}</p>
+                      <p className="text-xs text-gray-400">{broker.location || 'Unknown'} • {broker.ip}</p>
                     </div>
                   ))}
                 </div>
               </div>
             </div>
 
-            {/* Kolom Kanan: Monitoring & Peta */}
             <div className="lg:col-span-2 space-y-6">
               <div className="card">
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-xl font-semibold">
-                    {selectedBroker
-                      ? `${selectedBroker.brokerName} - ${selectedBroker.serverName}`
-                      : 'Select a broker'}
+                    {selectedBroker ? selectedBroker.serverName : 'Select a broker server'}
                   </h2>
                   <div>
                     {!testRunning ? (
@@ -401,8 +418,8 @@
           </div>
 
           <p className="text-center text-gray-500 text-xs mt-6">
-            * Latency diukur dari browser Anda ke broker IP (ICMP tidak tersedia dari browser).<br />
-            Untuk hasil akurat dari VPS, gunakan backend Node.js (tersedia dalam panduan sebelumnya).
+            * Latency diukur dari browser Anda ke IP broker (tidak bisa ICMP ping dari VPS).<br />
+            Untuk data broker terbaru dari MQL5, upload file <code>brokers.json</code> ke root situs (lihat panduan).
           </p>
         </div>
       );
